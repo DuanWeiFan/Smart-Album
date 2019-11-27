@@ -1,0 +1,14 @@
+syntax = "proto3";
+// python -m grpc_tools.protoc -I./ --python_out=. --grpc_python_out=. ./img.proto
+
+service ImageProto {
+    rpc ClassifyImage(ImageMsg) returns (ImageAttribute) {};
+}
+
+message ImageMsg {
+    bytes img=1;
+}
+
+message ImageAttribute {
+    bytes msg=1;
+}
