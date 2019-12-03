@@ -5,6 +5,7 @@ from keras.applications.vgg16 import decode_predictions
 from keras.applications.vgg16 import VGG16
 from concurrent import futures
 from PIL import Image
+import tensorflow as tf
 import img_pb2
 import img_pb2_grpc
 import grpc
@@ -25,7 +26,9 @@ class Worker_Server(img_pb2_grpc.ImageProtoServicer):
         img = img_to_array(img)
         img = img.reshape((1, img.shape[0], img.shape[1], img.shape[2]))
         img = preprocess_input(img)
+        self.model._make_predict_function()
         prediction = decode_predictions(self.model.predict(img))[0][0]
+        # prediction = decode_predictions(self.model._make_predict_function(img))[0][0]
         print('prediction:', prediction)
         msg = {
             'class': prediction[1],
@@ -34,6 +37,7 @@ class Worker_Server(img_pb2_grpc.ImageProtoServicer):
         return msg
 
     def ClassifyImage(self, request, context):
+        print('Classify Image')
         img_data = pickle.loads(request.img)
         ioBuffer = io.BytesIO(img_data['image'])
         img = Image.open(ioBuffer)
@@ -49,8 +53,8 @@ def serve():
 
 if __name__ == '__main__':
     # print('testing worker')
-    # worker = worker_server()
-    # img = open('images/car.jpg', 'rb').read()
+    # worker = Worker_Server()
+    # img = open('../images/car.jpg', 'rb').read()
     # img = Image.open(io.BytesIO(img))
     # worker.predict(img)
     print('start serving')
