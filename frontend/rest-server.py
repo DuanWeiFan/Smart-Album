@@ -6,9 +6,15 @@ import pickle
 import hashlib
 import jsonpickle
 import io
+import os
 import redis
+import requests
 from PIL import Image
-from flask import Flask, request, Response
+from flask import Flask, request, Response, render_template
+import flask
+import google.oauth2.credentials
+import google_auth_oauthlib.flow
+import googleapiclient.discovery
 
 class Rest_Server():
     def __init__(self, worker_host, redis_host):
@@ -16,6 +22,14 @@ class Rest_Server():
         self.stub = img_pb2_grpc.ImageProtoStub(channel)
         self.redisByImage = redis.Redis(host=redis_host, db=1, decode_responses=True)
         self.redisByClass = redis.Redis(host=redis_host, db=2, decode_responses=True)
+        self.init_auth()
+        pass
+
+    def init_auth(self):
+        self.CLIENT_SECRETS_FILE = "auth/client_secret.json"
+        self.SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
+        self.API_SERVICE_NAME = 'photoslibrary'
+        self.API_VERSION = 'v1'
 
     def send_image(self, img):
         # assume img to be bytes
@@ -25,12 +39,114 @@ class Rest_Server():
         print('img attribute:', img_attribute)
         return img_attribute
 
+    def credentials_to_dict(self, credentials):
+        return {'token': credentials.token,
+                'refresh_token': credentials.refresh_token,
+                'token_uri': credentials.token_uri,
+                'client_id': credentials.client_id,
+                'client_secret': credentials.client_secret,
+                'scopes': credentials.scopes}
+
     def run(self):
         app = Flask(__name__)
 
-        @app.route('/', methods=['GET'])
+        @app.route('/')
+        def index():
+            return ('<table>' +
+                    '<tr><td><a href="/test">Test an API request</a></td>' +
+                    '<td>Submit an API request and see a formatted JSON response. ' +
+                    '    Go through the authorization flow if there are no stored ' +
+                    '    credentials for the user.</td></tr>')
+
+        @app.route('/test')
+        def test_api_request():
+            if 'credentials' not in flask.session:
+                return flask.redirect('authorize')
+
+            # Load credentials from the session.
+            credentials = google.oauth2.credentials.Credentials(
+                **flask.session['credentials'])
+
+            # build the service
+            google_photos = googleapiclient.discovery.build(
+                self.API_SERVICE_NAME, self.API_VERSION, credentials=credentials)
+
+            # files = google_photos.albums().list().execute()
+
+            nextpagetoken = 'Dummy'
+            while nextpagetoken != '':
+                nextpagetoken = '' if nextpagetoken == 'Dummy' else nextpagetoken
+                results = google_photos.mediaItems().list().execute()
+                files = results
+                # The default number of media items to return at a time is 25. The maximum pageSize is 100.
+                items = results.get('mediaItems', [])
+                nextpagetoken = results.get('nextPageToken', '')
+                url_list = []
+                dic = {}
+                for item in items:
+                        dic[item['id']] = item['baseUrl']
+
+            #files = google_photos.albums().list(
+            #    pageSize=10, fields="nextPageToken,albums(id,title)").execute()
+
+            # Save credentials back to session in case access token was refreshed.
+            # ACTION ITEM: In a production app, you likely want to save these
+            #              credentials in a persistent database instead.
+            flask.session['credentials'] = self.credentials_to_dict(credentials)
+
+            return flask.jsonify(**dic)
+
+        @app.route('/authorize')
+        def authorize():
+            # Create flow instance to manage the OAuth 2.0 Authorization Grant Flow steps.
+            flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+                self.CLIENT_SECRETS_FILE, scopes=self.SCOPES)
+
+            # The URI created here must exactly match one of the authorized redirect URIs
+            # for the OAuth 2.0 client, which you configured in the API Console. If this
+            # value doesn't match an authorized URI, you will get a 'redirect_uri_mismatch'
+            # error.
+            flow.redirect_uri = flask.url_for('oauth2callback', _external=True)
+
+            authorization_url, state = flow.authorization_url(
+                # Enable offline access so that you can refresh an access token without
+                # re-prompting the user for permission. Recommended for web server apps.
+                access_type='offline',
+                # Enable incremental authorization. Recommended as a best practice.
+                include_granted_scopes='false')
+
+            # Store the state so the callback can verify the auth server response.
+            flask.session['state'] = state
+
+            return flask.redirect(authorization_url)
+
+        @app.route('/oauth2callback')
+        def oauth2callback():
+            # Specify the state when creating the flow in the callback so that it can
+            # verified in the authorization server response.
+            state = flask.session['state']
+
+            flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+                self.CLIENT_SECRETS_FILE, scopes=self.SCOPES, state=state)
+            flow.redirect_uri = flask.url_for('oauth2callback', _external=True)
+
+            # Use the authorization server's response to fetch the OAuth 2.0 tokens.
+            authorization_response = flask.request.url
+            flow.fetch_token(authorization_response=authorization_response)
+
+            # Store credentials in the session.
+            # ACTION ITEM: In a production app, you likely want to save these
+            #              credentials in a persistent database instead.
+            credentials = flow.credentials
+            flask.session['credentials'] = self.credentials_to_dict(credentials)
+
+            return flask.redirect(flask.url_for('test_api_request'))
+
+
+        @app.route('/index', methods=['GET'])
         def hello():
-            return "Hello, Welcome to Data-Center Project"
+            # return "Hello, Welcome to Data-Center Project"
+            return render_template('index.html')
 
         @app.route('/image/classify/<filename>', methods=['PUT'])
         def put_image(filename):
@@ -79,6 +195,8 @@ class Rest_Server():
             return Response(response=response_pickled,
                             status=200,
                             mimetype="application/json")
+        os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+        app.secret_key = '~"K_\xef\xec\xb3L\x002\x9e:\xbd\x19\xe9\xeeY)\xf7\x92j\x06|W'
         app.run(host='0.0.0.0', port=5000)
 
 if __name__ == '__main__':
@@ -90,4 +208,3 @@ if __name__ == '__main__':
     server.run()
     # img = open('../images/car.jpg', 'rb').read()
     # server.send_image(img)
-    
