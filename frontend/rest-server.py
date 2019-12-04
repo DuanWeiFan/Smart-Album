@@ -23,13 +23,36 @@ class Rest_Server():
         self.redisByImage = redis.Redis(host=redis_host, db=1, decode_responses=True)
         self.redisByClass = redis.Redis(host=redis_host, db=2, decode_responses=True)
         self.init_auth()
-        pass
 
     def init_auth(self):
         self.CLIENT_SECRETS_FILE = "auth/client_secret.json"
         self.SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
         self.API_SERVICE_NAME = 'photoslibrary'
         self.API_VERSION = 'v1'
+
+    def process_google_photos(self, photo_dic):
+        for photo in photo_dic:
+            img_url = photo_dic[photo]
+            # drop duplicate photos
+            if not self.redisByImage.get(img_url):
+                img_content = requests.get(img_url).content
+                ioBuffer = io.BytesIO(img_content)
+                md5 = hashlib.md5(ioBuffer.getvalue()).hexdigest()
+                image_data = {
+                    'image': img_content,
+                    'md5': md5,
+                    'filename': img_url
+                }
+                img_attribute = self.send_image(pickle.dumps(image_data))
+                self.save_img_to_redis(img_url, img_attribute)
+
+    def save_img_to_redis(self, filename, img_attribute):
+        if img_attribute['confidence'] > 0.5:
+            self.redisByImage.set(filename, img_attribute['class'])
+            self.redisByClass.rpush(img_attribute['class'], filename)
+        else:
+            self.redisByImage.set(filename, 'others')
+            self.redisByClass.rpush('others', filename)
 
     def send_image(self, img):
         # assume img to be bytes
@@ -51,50 +74,8 @@ class Rest_Server():
         app = Flask(__name__)
 
         @app.route('/')
-        def index():
-            return ('<table>' +
-                    '<tr><td><a href="/test">Test an API request</a></td>' +
-                    '<td>Submit an API request and see a formatted JSON response. ' +
-                    '    Go through the authorization flow if there are no stored ' +
-                    '    credentials for the user.</td></tr>')
-
-        @app.route('/test')
-        def test_api_request():
-            if 'credentials' not in flask.session:
-                return flask.redirect('authorize')
-
-            # Load credentials from the session.
-            credentials = google.oauth2.credentials.Credentials(
-                **flask.session['credentials'])
-
-            # build the service
-            google_photos = googleapiclient.discovery.build(
-                self.API_SERVICE_NAME, self.API_VERSION, credentials=credentials)
-
-            # files = google_photos.albums().list().execute()
-
-            nextpagetoken = 'Dummy'
-            while nextpagetoken != '':
-                nextpagetoken = '' if nextpagetoken == 'Dummy' else nextpagetoken
-                results = google_photos.mediaItems().list().execute()
-                files = results
-                # The default number of media items to return at a time is 25. The maximum pageSize is 100.
-                items = results.get('mediaItems', [])
-                nextpagetoken = results.get('nextPageToken', '')
-                url_list = []
-                dic = {}
-                for item in items:
-                        dic[item['id']] = item['baseUrl']
-
-            #files = google_photos.albums().list(
-            #    pageSize=10, fields="nextPageToken,albums(id,title)").execute()
-
-            # Save credentials back to session in case access token was refreshed.
-            # ACTION ITEM: In a production app, you likely want to save these
-            #              credentials in a persistent database instead.
-            flask.session['credentials'] = self.credentials_to_dict(credentials)
-
-            return flask.jsonify(**dic)
+        def login():
+            return render_template('login.html')
 
         @app.route('/authorize')
         def authorize():
@@ -140,12 +121,44 @@ class Rest_Server():
             credentials = flow.credentials
             flask.session['credentials'] = self.credentials_to_dict(credentials)
 
-            return flask.redirect(flask.url_for('test_api_request'))
+            return flask.redirect(flask.url_for('index'))
 
 
         @app.route('/index', methods=['GET'])
-        def hello():
+        def index():
             # return "Hello, Welcome to Data-Center Project"
+            if 'credentials' not in flask.session:
+                return flask.redirect('authorize')
+
+            # Load credentials from the session.
+            credentials = google.oauth2.credentials.Credentials(
+                **flask.session['credentials'])
+
+            # build the service
+            google_photos = googleapiclient.discovery.build(
+                self.API_SERVICE_NAME, self.API_VERSION, credentials=credentials)
+
+            nextpagetoken = 'Dummy'
+            while nextpagetoken != '':
+                nextpagetoken = '' if nextpagetoken == 'Dummy' else nextpagetoken
+                results = google_photos.mediaItems().list().execute()
+                files = results
+                # The default number of media items to return at a time is 25. The maximum pageSize is 100.
+                items = results.get('mediaItems', [])
+                nextpagetoken = results.get('nextPageToken', '')
+                url_list = []
+                dic = {}
+                for item in items:
+                        dic[item['id']] = item['baseUrl']
+
+            # Save credentials back to session in case access token was refreshed.
+            # ACTION ITEM: In a production app, you likely want to save these
+            #              credentials in a persistent database instead.
+            flask.session['credentials'] = self.credentials_to_dict(credentials)
+            app.logger.info('Start processing google photos')
+            self.process_google_photos(dic)
+            app.logger.info('Done processing! Number of photos: %s', len(dic))
+
             return render_template('index.html')
 
         @app.route('/image/classify/<filename>', methods=['PUT'])
@@ -160,17 +173,13 @@ class Rest_Server():
                 'filename': filename
             }
             img_attribute = self.send_image(pickle.dumps(image_data))
-            if img_attribute['confidence'] > 0.5:
-                self.redisByImage.set(filename, img_attribute['class'])
-                self.redisByClass.rpush(img_attribute['class'], filename)
-            else:
-                self.redisByImage.set(filename, 'others')
-                self.redisByClass.rpush('others', filename)
+            self.save_img_to_redis(filename, img_attribute)
             return Response(
                 response=jsonpickle.encode(img_attribute),
                 status=200,
                 mimetype="application/json"
             )
+
         @app.route('/image/class/<class_name>', methods=['GET'])
         def get_image_by_class(class_name):
             images = []
@@ -206,5 +215,3 @@ if __name__ == '__main__':
     args=parser.parse_args()
     server = Rest_Server(args.worker, args.redis)
     server.run()
-    # img = open('../images/car.jpg', 'rb').read()
-    # server.send_image(img)
