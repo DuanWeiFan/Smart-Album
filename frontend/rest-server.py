@@ -15,6 +15,7 @@ import flask
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
+from base64 import b64encode
 
 class Rest_Server():
     def __init__(self, worker_host, redis_host):
@@ -30,7 +31,16 @@ class Rest_Server():
         self.API_SERVICE_NAME = 'photoslibrary'
         self.API_VERSION = 'v1'
 
+    def send_image(self, img):
+        # assume img to be bytes
+        print('sending image')
+        img_attribute = self.stub.ClassifyImage(img_pb2.ImageMsg(img=img))
+        img_attribute = pickle.loads(img_attribute.msg)
+        print('img attribute:', img_attribute)
+        return img_attribute
+
     def process_google_photos(self, photo_dic):
+        print('process google photos')
         for photo in photo_dic:
             img_url = photo_dic[photo]
             # drop duplicate photos
@@ -45,6 +55,7 @@ class Rest_Server():
                 }
                 img_attribute = self.send_image(pickle.dumps(image_data))
                 self.save_img_to_redis(img_url, img_attribute)
+        print('done processing google photos')
 
     def save_img_to_redis(self, filename, img_attribute):
         if img_attribute['confidence'] > 0.5:
@@ -54,14 +65,6 @@ class Rest_Server():
             self.redisByImage.set(filename, 'others')
             self.redisByClass.rpush('others', filename)
 
-    def send_image(self, img):
-        # assume img to be bytes
-        print('sending image')
-        img_attribute = self.stub.ClassifyImage(img_pb2.ImageMsg(img=img))
-        img_attribute = pickle.loads(img_attribute.msg)
-        print('img attribute:', img_attribute)
-        return img_attribute
-
     def credentials_to_dict(self, credentials):
         return {'token': credentials.token,
                 'refresh_token': credentials.refresh_token,
@@ -69,6 +72,17 @@ class Rest_Server():
                 'client_id': credentials.client_id,
                 'client_secret': credentials.client_secret,
                 'scopes': credentials.scopes}
+    
+    def search_images_by_class(self, search_term):
+        images = []
+        images_url = []
+        if self.redisByClass.lrange(search_term, 0, -1):
+            images_url = self.redisByClass.lrange(search_term, 0, -1)
+        for img_url in images_url:
+            img_content = requests.get(img_url).content
+            img = b64encode(img_content).decode('utf-8')
+            images.append(img)
+        return images
 
     def run(self):
         app = Flask(__name__)
@@ -121,15 +135,23 @@ class Rest_Server():
             credentials = flow.credentials
             flask.session['credentials'] = self.credentials_to_dict(credentials)
 
-            return flask.redirect(flask.url_for('index'))
+            return flask.redirect(flask.url_for('process_images'))
 
-
-        @app.route('/index', methods=['GET'])
-        def index():
-            # return "Hello, Welcome to Data-Center Project"
+        @app.route('/showImageSlide')
+        def show_image_slide():
             if 'credentials' not in flask.session:
-                return flask.redirect('authorize')
+                return flask.redirect('index')
+            images = []
+            for photo in self.photo_dic:
+                img_url = self.photo_dic[photo]
+                print('img_url:', img_url)
+                img_content = requests.get(img_url).content
+                img = b64encode(img_content).decode('utf-8')
+                images.append(img)
+            return render_template('slide_show_images.html', images=images, len=len(images))
 
+        @app.route('/process_images')
+        def process_images():
             # Load credentials from the session.
             credentials = google.oauth2.credentials.Credentials(
                 **flask.session['credentials'])
@@ -157,9 +179,22 @@ class Rest_Server():
             flask.session['credentials'] = self.credentials_to_dict(credentials)
             app.logger.info('Start processing google photos')
             self.process_google_photos(dic)
+            self.photo_dic = dic
             app.logger.info('Done processing! Number of photos: %s', len(dic))
+            return flask.redirect('index')
 
-            return render_template('index.html')
+        @app.route('/index', methods=['GET', 'POST'])
+        def index():
+            # return "Hello, Welcome to Data-Center Project"
+            if 'credentials' not in flask.session:
+                return flask.redirect('authorize')
+    
+            if request.method == 'POST':
+                search_term = request.form.get('searchTerm')
+                images = self.search_images_by_class(search_term)
+                return render_template('index.html', images=images, len=len(images))
+
+            return render_template('index.html', images=[], len=0)
 
         @app.route('/image/classify/<filename>', methods=['PUT'])
         def put_image(filename):
@@ -206,7 +241,7 @@ class Rest_Server():
                             mimetype="application/json")
         os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
         app.secret_key = '~"K_\xef\xec\xb3L\x002\x9e:\xbd\x19\xe9\xeeY)\xf7\x92j\x06|W'
-        app.run(host='0.0.0.0', port=5000)
+        app.run(host='0.0.0.0', port=5000, debug=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

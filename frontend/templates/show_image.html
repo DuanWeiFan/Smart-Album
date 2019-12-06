@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Flask app</title>
+    </head>
+            
+    <body>
+        {% for img in images %}
+            <img src="data:;base64,{{ img }}"/>
+        {% endfor %}
+    </body>
+</html>
+
