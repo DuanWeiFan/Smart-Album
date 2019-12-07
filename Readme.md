@@ -8,10 +8,10 @@ After processing images, there will be a home page where user can query class na
 2. Google Photo API
 3. Kubernetes
 
-###Architecture:
+### Architecture:
 ![Architecture Diagram](images/Architecture-Diagram.png)
 
-###Resources:
+### Resources:
 
 - [Image Slideshow](https://www.w3schools.com/howto/howto_js_slideshow.asp)
 - [Keras pretrained VGG16 w/ imagenet](https://keras.io/applications/#vgg16)
