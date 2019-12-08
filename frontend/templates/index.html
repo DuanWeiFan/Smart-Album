@@ -32,8 +32,8 @@
         <br>    
         <!-- The dots/circles -->
         <div style="text-align:center">
-            {% for i in range(1, len+1) %}    
-                <span class="dot" onclick="currentSlide(i)"></span>
+            {% for i in range(1, len+1) %}
+                <span class="dot" onclick="currentSlide('{{ i }}')"></span>
             {% endfor %}
         </div>
         <script>
