@@ -38,8 +38,8 @@ class Worker_Server(img_pb2_grpc.ImageProtoServicer):
 
     def ClassifyImage(self, request, context):
         print('Classify Image')
-        img_data = pickle.loads(request.img)
-        ioBuffer = io.BytesIO(img_data['image'])
+        # img_data = pickle.loads(request.img)
+        ioBuffer = io.BytesIO(request.img)
         img = Image.open(ioBuffer)
         classification = self.predict(img)
         return img_pb2.ImageAttribute(msg=pickle.dumps(classification))

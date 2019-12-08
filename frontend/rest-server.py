@@ -39,23 +39,18 @@ class Rest_Server():
         print('img attribute:', img_attribute)
         return img_attribute
 
-    def process_google_photos(self, photo_dic):
-        print('process google photos')
+    def process_google_photos(self, app, photo_dic):
         for photo in photo_dic:
             img_url = photo_dic[photo]
             # drop duplicate photos
             if not self.redisByImage.get(img_url):
-                img_content = requests.get(img_url).content
-                ioBuffer = io.BytesIO(img_content)
-                md5 = hashlib.md5(ioBuffer.getvalue()).hexdigest()
-                image_data = {
-                    'image': img_content,
-                    'md5': md5,
-                    'filename': img_url
-                }
-                img_attribute = self.send_image(pickle.dumps(image_data))
-                self.save_img_to_redis(img_url, img_attribute)
-        print('done processing google photos')
+                try:
+                    img_content = requests.get(img_url).content
+                    img_attribute = self.send_image(img_content)
+                    self.save_img_to_redis(img_url, img_attribute)
+                except Exception as e:
+                    app.logger.debug('Exception: %s, url: %s', e, img_url)
+        app.logger.info('Done Processing Google Photos')
 
     def save_img_to_redis(self, filename, img_attribute):
         if img_attribute['confidence'] > 0.5:
@@ -73,16 +68,52 @@ class Rest_Server():
                 'client_secret': credentials.client_secret,
                 'scopes': credentials.scopes}
     
-    def search_images_by_class(self, search_term):
+    def images_url_to_images_b64(self, images_url):
         images = []
-        images_url = []
-        if self.redisByClass.lrange(search_term, 0, -1):
-            images_url = self.redisByClass.lrange(search_term, 0, -1)
         for img_url in images_url:
             img_content = requests.get(img_url).content
             img = b64encode(img_content).decode('utf-8')
             images.append(img)
         return images
+
+    def search_images_by_class(self, search_term):
+        images_url = []
+        img_classes = []
+        if self.redisByClass.lrange(search_term, 0, -1):
+            images_url = self.redisByClass.lrange(search_term, 0, -1)
+            img_classes = [search_term for _ in range(len(images_url))]
+        return self.images_url_to_images_b64(images_url), img_classes
+    
+    def get_all_images(self):
+        images_url = []
+        img_classes = []
+        for img_url in self.redisByImage.scan_iter('*'):
+            images_url.append(img_url)
+        for img_url in images_url:
+            img_classes.append(self.redisByImage.get(img_url))
+        return self.images_url_to_images_b64(images_url), img_classes
+        
+
+    def images_to_images_2d(self, images: list):
+        images_2d = [[]]
+        for i in range(len(images)):
+            if len(images_2d[-1]) == 3:
+                images_2d.append([])
+            images_2d[-1].append(images[i])
+        return images_2d
+
+    def create_html_code_from_images(self, images: list, img_classes: list):
+        print('num of images:', len(images))
+        images_2d = self.images_to_images_2d(images)
+        html_code = ''
+        idx = 0
+        for img3 in images_2d:
+            html_code += '''<div class="w3-third">'''
+            for img in img3:
+                html_code += '''<img src="data:;base64,{}" style="width:100%" onclick="onClick(this)" alt="image class: {}"> '''.format(img, img_classes[idx])
+                idx += 1
+            html_code += '''</div>'''
+        return html_code
 
     def run(self):
         app = Flask(__name__)
@@ -137,19 +168,6 @@ class Rest_Server():
 
             return flask.redirect(flask.url_for('process_images'))
 
-        @app.route('/showImageSlide')
-        def show_image_slide():
-            if 'credentials' not in flask.session:
-                return flask.redirect('index')
-            images = []
-            for photo in self.photo_dic:
-                img_url = self.photo_dic[photo]
-                print('img_url:', img_url)
-                img_content = requests.get(img_url).content
-                img = b64encode(img_content).decode('utf-8')
-                images.append(img)
-            return render_template('slide_show_images.html', images=images, len=len(images))
-
         @app.route('/process_images')
         def process_images():
             # Load credentials from the session.
@@ -178,7 +196,7 @@ class Rest_Server():
             #              credentials in a persistent database instead.
             flask.session['credentials'] = self.credentials_to_dict(credentials)
             app.logger.info('Start processing google photos')
-            self.process_google_photos(dic)
+            self.process_google_photos(app, dic)
             self.photo_dic = dic
             app.logger.info('Done processing! Number of photos: %s', len(dic))
             return flask.redirect('index')
@@ -191,54 +209,15 @@ class Rest_Server():
     
             if request.method == 'POST':
                 search_term = request.form.get('searchTerm')
-                images = self.search_images_by_class(search_term)
-                return render_template('index.html', images=images, len=len(images))
+                images, img_classes = self.search_images_by_class(search_term)
+                html_code = self.create_html_code_from_images(images, img_classes)
+                app.logger.info('%s of photos', len(images))
+                return render_template('index2.html', portfolio=html_code, images=images, len=len(images))
+            images, img_classes = self.get_all_images()
+            app.logger.info('%s of photos', len(images))
+            html_code = self.create_html_code_from_images(images, img_classes)
+            return render_template('index2.html', portfolio=html_code, images=[], len=0)
 
-            return render_template('index.html', images=[], len=0)
-
-        @app.route('/image/classify/<filename>', methods=['PUT'])
-        def put_image(filename):
-            r = request
-            # convert the data to a PIL image type so we can extract dimensions
-            ioBuffer = io.BytesIO(r.data)
-            md5 = hashlib.md5(ioBuffer.getvalue()).hexdigest()
-            image_data = {
-                'image': r.data,
-                'md5': md5,
-                'filename': filename
-            }
-            img_attribute = self.send_image(pickle.dumps(image_data))
-            self.save_img_to_redis(filename, img_attribute)
-            return Response(
-                response=jsonpickle.encode(img_attribute),
-                status=200,
-                mimetype="application/json"
-            )
-
-        @app.route('/image/class/<class_name>', methods=['GET'])
-        def get_image_by_class(class_name):
-            images = []
-            if self.redisByClass.lrange(class_name, 0, -1):
-                images = self.redisByClass.lrange(class_name, 0, -1)
-            response = {
-                'images': images
-            }
-            response_pickled = jsonpickle.encode(response)
-            return Response(response=response_pickled,
-                            status=200,
-                            mimetype="application/json")
-        @app.route('/image/filename/<filename>', methods=['GET'])
-        def get_class_by_filename(filename):
-            class_name = None
-            if self.redisByImage.get(filename):
-                class_name = self.redisByImage.get(filename)
-            response = {
-                'class_name': class_name
-            }
-            response_pickled = jsonpickle.encode(response)
-            return Response(response=response_pickled,
-                            status=200,
-                            mimetype="application/json")
         os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
         app.secret_key = '~"K_\xef\xec\xb3L\x002\x9e:\xbd\x19\xe9\xeeY)\xf7\x92j\x06|W'
         app.run(host='0.0.0.0', port=5000, debug=True)
