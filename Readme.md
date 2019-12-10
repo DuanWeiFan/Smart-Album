@@ -13,7 +13,9 @@ Smart Album is built on Google Cloud Platform, a service that can classify image
 4. Create Redis Deployment, Service: `> ./redis/redis-launch.sh`
 5. Create Frontend Deployment, Service: `> ./frontend/frontend-launch.sh` 
 6. Set Google Photo API: Replace **Authorized JavaScript origins** and **Authorized redirect URIs** with the external ip of your Frontend Service (*Run `> kubectl get services` to find it*)
+After setting up Google Photo API, click **Download JSON** and store secret file under */frontend/auth* repository with the filename **client_secret.json**
 ![](images/Google-Photo-Api.png)
+1. Remove existing Frontend Deployment`> kubectl delete deployment rest-server` and Rerun step.5 command. (An error message saying the service is already created is expected. But we can totally ignore it!)
 
 ### Run:
 Enter the external ip address plus 'xip.io:5000' Ex: http://34.82.36.165.xip.io:5000
