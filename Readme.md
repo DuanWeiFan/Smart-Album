@@ -21,7 +21,7 @@ After setting up Google Photo API, click **Download JSON** and store secret file
 Enter the external ip address plus 'xip.io:5000' Ex: http://34.82.36.165.xip.io:5000
 The reason we requires xip.io is that we did not set DNS name for our service, yet Google Photo API requires a valid URI to work. Port 5000 is the default port used by FLASK.
 ### Demo Video Link:
-[Demo Link](https://www.youtube.com/watch?v=rta-aqRnJ48&feature=youtu.be)
+[![Demo Link](images/Youtube&#32;Screenshot.png)](https://www.youtube.com/watch?v=rta-aqRnJ48&feature=youtu.be)
 
 ### List of Software and Hardware Components:
 1. Python
